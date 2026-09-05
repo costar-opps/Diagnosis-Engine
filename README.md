@@ -32,7 +32,7 @@ Java 17 · Spring Boot 3.2 · Spring AI Alibaba · DashScope · Milvus · Promet
 需要：Java 17、Maven、Docker Desktop、Node.js（跑 CLS MCP）、阿里云 DashScope Key。CLS 为可选，缺了只能做指标侧诊断。
 
 ```powershell
-git clone https://github.com/<your-username>/Diagnosis-Engine.git
+git clone https://github.com/costar-opps/Diagnosis-Engine.git
 cd Diagnosis-Engine
 Copy-Item cls.env.example cls.env
 # 编辑 cls.env：至少填写 DASHSCOPE_API_KEY；要用日志证据再填腾讯云 CLS 相关项
