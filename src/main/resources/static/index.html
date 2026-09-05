@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>diagnosis-engine · 诊断控制台</title>
+    <link rel="stylesheet" href="styles.css?v=20260808c">
+    <!-- Markdown 渲染库 -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+    <!-- 代码高亮库（可选） -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/es/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="app-layout">
+        <!-- 左侧边栏 -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h2 class="sidebar-title">diagnosis-engine</h2>
+                <p class="sidebar-subtitle">多项目故障诊断引擎</p>
+            </div>
+            
+            <div class="sidebar-content">
+                <button class="new-chat-btn active" id="newChatBtn">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                    <span>新建对话</span>
+                </button>
+                
+                <button class="sidebar-nav-btn" id="aiOpsMonitorNavBtn">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M3 3V21H21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <path d="M7 16L11 12L15 16L21 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <span>诊断控制台</span>
+                </button>
+
+                <div class="de-project-section">
+                    <div class="history-header">
+                        <span>被监控项目</span>
+                    </div>
+                    <div class="de-project-list" id="deProjectList">
+                        <!-- 项目列表由 aiops-monitor.js 渲染 -->
+                    </div>
+                </div>
+
+                <div class="chat-history-section">
+                    <div class="history-header">
+                        <span>近期对话</span>
+                    </div>
+                    <div class="chat-history-list" id="chatHistoryList">
+                        <!-- 历史对话列表将在这里动态生成 -->
+                    </div>
+                </div>
+                
+            </div>
+        </aside>
+
+        <!-- 主内容区域 -->
+        <main class="main-content">
+            <button class="ai-ops-top-btn" id="aiOpsSidebarBtn" title="运行平台级诊断（共享资源）">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>平台级诊断</span>
+            </button>
+
+            <!-- 对话视图 -->
+            <div id="chatView" class="main-view active">
+            <div class="chat-container">
+                <div class="welcome-greeting" id="welcomeGreeting">
+                    <p>你好，我是 diagnosis-engine 诊断助手</p>
+                </div>
+                <div class="chat-messages" id="chatMessages">
+                </div>
+                
+                <div class="chat-input-container">
+                    <div class="input-group-wrapper">
+                        <div class="input-wrapper">
+                            <input type="text" id="messageInput" placeholder="问问 diagnosis-engine 诊断助手" maxlength="1000" class="message-input">
+                            <div class="input-bottom-bar">
+                                <div class="tools-btn-wrapper">
+                                    <button class="tools-btn" id="toolsBtn" title="更多选项">
+                                        <svg class="tools-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                            <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
+                                            <circle cx="19" cy="12" r="1.5" fill="currentColor"/>
+                                            <circle cx="5" cy="12" r="1.5" fill="currentColor"/>
+                                        </svg>
+                                    </button>
+                                    <div class="tools-menu" id="toolsMenu">
+                                        <div class="tools-menu-item" id="uploadFileItem">
+                                            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                            </svg>
+                                            <span>上传文件</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="right-actions">
+                                    <div class="mode-selector-wrapper">
+                                        <button class="mode-selector-btn" id="modeSelectorBtn">
+                                            <span id="currentModeText">快速</span>
+                                            <svg class="dropdown-arrow" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                            </svg>
+                                        </button>
+                                        <div class="mode-dropdown" id="modeDropdown">
+                                            <div class="dropdown-header">选择对话方式</div>
+                                            <div class="dropdown-item active" data-mode="quick">
+                                                <div class="dropdown-item-main">
+                                                    <span>快速</span>
+                                                    <span class="badge-new">新</span>
+                                                </div>
+                                                <div class="dropdown-item-sub">快速对话</div>
+                                            </div>
+                                            <div class="dropdown-item" data-mode="stream">
+                                                <div class="dropdown-item-main">
+                                                    <span>流式</span>
+                                                </div>
+                                                <div class="dropdown-item-sub">流式对话</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <button class="send-btn-circle" id="sendButton" title="发送">
+                                        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                            <path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <input type="file" id="fileInput" accept=".txt,.md,.markdown" style="display: none;">
+                </div>
+            </div>
+            </div>
+
+            <!-- 诊断控制台：平台层 / 项目层 / 报告层 -->
+            <div id="aiopsMonitorView" class="main-view">
+                <div class="aiops-monitor-page">
+                    <div class="de-console-toolbar">
+                        <div class="de-toolbar-left">
+                            <h2 class="aiops-monitor-title">diagnosis-engine · 诊断控制台</h2>
+                            <p class="aiops-monitor-subtitle">平台层看共享资源，项目层看单个项目的业务链路</p>
+                        </div>
+                        <div class="de-toolbar-right">
+                            <label class="de-select-wrap">
+                                <span>当前项目</span>
+                                <select id="deProjectSelect"></select>
+                            </label>
+                            <span class="de-mode-badge" id="deModeBadge">项目级诊断</span>
+                            <button type="button" class="monitor-action-btn primary" id="deRefreshBtn">刷新控制台</button>
+                            <button type="button" class="monitor-action-btn secondary" id="loadCurrentMonitorBtn">仅刷新平台数据</button>
+                            <button type="button" class="monitor-action-btn secondary" id="runAiOpsFromMonitorBtn">平台级诊断</button>
+                            <button type="button" class="monitor-action-btn secondary" id="backToChatBtn">返回对话</button>
+                        </div>
+                    </div>
+
+                    <div id="aiopsMonitorContent" class="aiops-monitor-content">
+                        <div id="aiopsMonitorMeta" class="aiops-monitor-meta-bar"></div>
+
+                        <section class="de-panel" id="dePlatformPanel">
+                            <div class="de-panel-head">
+                                <div>
+                                    <h3 class="de-panel-title">平台层 · 共享资源</h3>
+                                    <p class="de-panel-sub">全平台共享，不随项目切换而变化</p>
+                                </div>
+                                <span class="de-badge" id="dePlatformBadge" hidden></span>
+                            </div>
+                            <div class="de-panel-body">
+                                <div id="aiopsMonitorDashboard" class="aiops-dashboard aiops-dashboard-page"></div>
+                            </div>
+                        </section>
+
+                        <section class="de-panel" id="deProjectPanel">
+                            <div class="de-panel-head">
+                                <div>
+                                    <h3 class="de-panel-title">项目层 · <span id="deProjectTitleName">未选择项目</span></h3>
+                                    <p class="de-panel-sub">仅展示当前所选项目的业务指标、异常与变更</p>
+                                </div>
+                                <div class="de-panel-head-right">
+                                    <span class="de-badge" id="deProjectBadge" hidden></span>
+                                    <button type="button" class="monitor-action-btn primary" id="deRunDiagnosisBtn">一键诊断（项目级）</button>
+                                </div>
+                            </div>
+                            <div class="de-panel-body">
+                                <div id="deDiagnosisStatus" class="de-panel-status" hidden></div>
+                                <div id="deProjectBody"></div>
+                            </div>
+                        </section>
+
+                        <section class="de-panel" id="deReportPanel">
+                            <div class="de-panel-head">
+                                <div>
+                                    <h3 class="de-panel-title">诊断报告</h3>
+                                    <p class="de-panel-sub" id="deReportMeta">暂无报告</p>
+                                </div>
+                                <span class="de-badge" id="deReportBadge" hidden></span>
+                            </div>
+                            <div class="de-panel-body">
+                                <div id="deTraceBar" class="de-trace-bar"></div>
+                                <div id="aiopsMonitorReport" class="aiops-monitor-report markdown-body"></div>
+                                <div id="deReportActions" class="de-report-actions"></div>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- 加载遮罩层 -->
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="loading-content">
+            <div class="loading-spinner"></div>
+            <div class="loading-text">平台级诊断进行中，请稍候...</div>
+            <div class="loading-subtext">后端正在处理，请耐心等待</div>
+        </div>
+    </div>
+
+    <script src="diagnosis-sample-data.js?v=20260810a"></script>
+    <script src="app.js?v=20260810a"></script>
+    <script src="aiops-monitor.js?v=20260810a"></script>
+</body>
+</html>

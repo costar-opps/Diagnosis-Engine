@@ -1,0 +1,90 @@
+# 配置模板。复制为 application.yml 后，密钥仍应通过环境变量或 cls.env 注入，不要把真实 Key 写进仓库。
+server:
+  port: 9900
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+
+file:
+  upload:
+    path: ./uploads
+    allowed-extensions: txt,md
+
+milvus:
+  host: localhost
+  port: 19530
+  username: ""
+  password: ""
+  database: default
+  timeout: 10000
+
+spring:
+  ai:
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY:}
+      chat:
+        options:
+          timeout: 180000
+      retry:
+        max-attempts: 3
+        backoff:
+          initial-interval: 2000
+          multiplier: 2
+          max-interval: 10000
+    mcp:
+      client:
+        enabled: true
+        name: tencent-mcp-server
+        version: 1.0.0
+        request-timeout: 60s
+        type: ASYNC
+        sse:
+          connections:
+            tencent-cls:
+              url: http://localhost:3000
+              sse-endpoint: /sse
+
+dashscope:
+  api:
+    key: ${DASHSCOPE_API_KEY:}
+  embedding:
+    model: text-embedding-v4
+
+document:
+  chunk:
+    max-size: 800
+    overlap: 100
+
+rag:
+  top-k: 3
+  model: "qwen3.7-plus"
+
+monitoring:
+  collect-interval-ms: 15000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus,info
+  endpoint:
+    prometheus:
+      enabled: true
+
+prometheus:
+  base-url: http://localhost:9090
+  timeout: 10
+  mock-enabled: false
+
+cls:
+  mock-enabled: false
+  region: ap-guangzhou
+  topic-id: ${CLS_TOPIC_ID:}
+  secret-id: ${TENCENTCLOUD_SECRET_ID:}
+  secret-key: ${TENCENTCLOUD_SECRET_KEY:}
+  log-shipping:
+    enabled: ${CLS_LOG_SHIPPING_ENABLED:true}
+    interval-seconds: 60
+    service-name: local-host

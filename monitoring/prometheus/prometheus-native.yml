@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+scrape_configs:
+  - job_name: super-biz-agent
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - localhost:9900
+        labels:
+          service: local-host
+          environment: local

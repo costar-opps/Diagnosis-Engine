@@ -1,0 +1,32 @@
+groups:
+  - name: local-host-alerts
+    rules:
+      - alert: HighCPUUsage
+        expr: host_cpu_usage_percent > 80
+        for: 1m
+        labels:
+          severity: warning
+          service: local-host
+        annotations:
+          summary: "本机 CPU 使用率过高"
+          description: "服务 local-host 的 CPU 使用率持续超过 80%，当前值为 {{ printf \"%.1f\" $value }}%。"
+
+      - alert: HighMemoryUsage
+        expr: host_memory_usage_percent > 85
+        for: 1m
+        labels:
+          severity: warning
+          service: local-host
+        annotations:
+          summary: "本机内存使用率过高"
+          description: "服务 local-host 的内存使用率持续超过 85%，当前值为 {{ printf \"%.1f\" $value }}%。"
+
+      - alert: HighDiskUsage
+        expr: host_disk_usage_percent > 90
+        for: 5m
+        labels:
+          severity: warning
+          service: local-host
+        annotations:
+          summary: "本机磁盘使用率过高"
+          description: "服务 local-host 的磁盘使用率持续超过 90%，当前值为 {{ printf \"%.1f\" $value }}%。"

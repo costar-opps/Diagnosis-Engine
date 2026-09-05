@@ -1,0 +1,42 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### IDE ###
+.idea/
+*.iws
+*.iml
+*.ipr
+.vscode/
+.cursor/
+.DS_Store
+
+### Secrets & local env ###
+cls.env
+.env
+.env.*
+!.env.example
+application-local.yml
+apikey.txt
+**/apikey.txt
+*cls.txt
+*密钥*
+*secret*
+
+### Logs & runtime ###
+*.log
+app.log
+logs/
+uploads/
+/volumes
+/server.pid
+startsse.txt
+Milvus.txt
+cp.txt
+
+### Prometheus local binary / data ###
+monitoring/prometheus/bin/
+monitoring/prometheus/data/
+monitoring/prometheus/*.log
+monitoring/prometheus/*.pid
