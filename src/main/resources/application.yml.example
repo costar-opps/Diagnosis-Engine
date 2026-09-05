@@ -88,3 +88,18 @@ cls:
     enabled: ${CLS_LOG_SHIPPING_ENABLED:true}
     interval-seconds: 60
     service-name: local-host
+
+diagnosis:
+  projects-dir: config/projects
+  default-mode: PLATFORM
+  cross-project-expansion-enabled: true
+  cross-project-retrieval-enabled: false
+  demo-telemetry-enabled: true
+  context:
+    token-budget: 8000
+  observability:
+    enabled: true
+    persist-prompt-body: false
+  limits:
+    max-tool-calls: 20
+    max-concurrent: 2

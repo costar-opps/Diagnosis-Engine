@@ -1,0 +1,56 @@
+identity:
+  id: order-service
+  name: 订单服务（配角）
+  owner: order-oncall
+  port: 18083
+  tags:
+    - supporting
+    - demo
+
+datasources:
+  logs:
+    type: demo
+    locator: demo://order-service/application-logs
+    fieldMap:
+      time: time
+      level: level
+      service: service
+      message: message
+  metrics:
+    - name: 下单 QPS
+      promQL: order_qps
+      threshold: 80
+      thresholdDirection: upper
+      unit: qps
+      meaning: 配角项目流量，用于资源争用对照
+      scope: project
+  code:
+    repoPath: demo/order-service
+    mainBranch: main
+    packagePrefix: com.demo.order
+  change:
+    type: none
+    locator: ""
+
+knowledge:
+  namespace: order-service
+  docRoots:
+    - knowledge/order-service
+
+business:
+  criticalPaths:
+    - name: 下单
+      steps:
+        - 创建订单
+  knownFaults: []
+  extraPromptHint: 配角项目，主要用于切换与资源争用。
+
+dependencies:
+  upstream: []
+  downstream: []
+
+ops:
+  alertLabels:
+    service: order-service
+  severityMap: {}
+  oncall: order-oncall

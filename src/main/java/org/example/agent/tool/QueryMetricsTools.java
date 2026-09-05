@@ -9,6 +9,7 @@ import okhttp3.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -299,5 +300,30 @@ public class QueryMetricsTools {
         
         @JsonProperty("error")
         private String error;
+    }
+
+    @Autowired(required = false)
+    private org.example.diagnosis.access.ScopedDataAccess scopedDataAccess;
+
+    @Tool(description = "Query shared host resource metrics (CPU/memory/disk style platform metrics). Use for PLATFORM diagnosis.")
+    public String queryPlatformMetrics() {
+        if (scopedDataAccess == null) {
+            return "{\"success\":false,\"message\":\"scoped data access unavailable\"}";
+        }
+        return scopedDataAccess.queryPlatformMetrics().getSummary();
+    }
+
+    @Tool(description = "Query a project business metric declared in ProjectProfile. projectId must match diagnosis context. metricName must be an exact declared name.")
+    public String queryProjectMetric(
+            @org.springframework.ai.tool.annotation.ToolParam(description = "authoritative project id") String projectId,
+            @org.springframework.ai.tool.annotation.ToolParam(description = "metric name declared in the project profile") String metricName) {
+        if (scopedDataAccess == null) {
+            return "{\"success\":false,\"message\":\"scoped data access unavailable\"}";
+        }
+        try {
+            return objectMapper.writeValueAsString(scopedDataAccess.queryProjectMetric(projectId, metricName));
+        } catch (Exception e) {
+            return "{\"success\":false,\"datasource\":\"project-metrics\",\"message\":\"" + e.getMessage() + "\"}";
+        }
     }
 }

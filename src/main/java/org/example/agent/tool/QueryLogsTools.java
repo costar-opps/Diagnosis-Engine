@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -690,5 +691,21 @@ public class QueryLogsTools {
         
         @JsonProperty("message")
         private String message;
+    }
+
+    @Autowired(required = false)
+    private org.example.diagnosis.access.ScopedDataAccess scopedDataAccess;
+
+    @Tool(description = "Query project logs routed by ProjectProfile locator. projectId must match diagnosis context.")
+    public String queryProjectLogs(
+            @ToolParam(description = "authoritative project id") String projectId) {
+        if (scopedDataAccess == null) {
+            return "{\"success\":false,\"message\":\"scoped data access unavailable\"}";
+        }
+        try {
+            return objectMapper.writeValueAsString(scopedDataAccess.queryProjectLogs(projectId));
+        } catch (Exception e) {
+            return "{\"success\":false,\"datasource\":\"project-logs\",\"message\":\"" + e.getMessage() + "\"}";
+        }
     }
 }

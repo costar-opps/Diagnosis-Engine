@@ -1,0 +1,35 @@
+identity:
+  id: legacy-report-center
+  name: 报表中心（历史系统）
+  owner: unknown
+  port: 18090
+  tags:
+    - legacy
+
+datasources:
+  logs:
+    type: demo
+    locator: ""
+  metrics: []
+  code:
+    repoPath: ""
+    packagePrefix: ""
+  change:
+    type: none
+
+knowledge:
+  namespace: ""
+  docRoots: []
+
+business:
+  criticalPaths: []
+  knownFaults: []
+
+dependencies:
+  upstream: []
+  downstream:
+    - not-registered-dep
+
+ops:
+  alertLabels: {}
+  oncall: ""

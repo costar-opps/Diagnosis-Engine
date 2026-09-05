@@ -576,8 +576,9 @@ Object.assign(SuperBizAgentApp.prototype, {
                 completedAt: new Date().toLocaleString('zh-CN', { hour12: false }),
                 report: data.report || '',
                 traceId: data.trace_id || '',
+                confidence: data.confidence || '',
                 toolCalls: data.tool_calls || [],
-                dataState: this.getPanelState('project')
+                dataState: 'live'
             };
             this.saveReportRecord(project.id, record);
             this.deReportSlot = project.id;
@@ -625,7 +626,8 @@ Object.assign(SuperBizAgentApp.prototype, {
             ? (record.projectName || record.projectId || '-')
             : '全平台共享资源';
         if (this.deReportMeta) {
-            this.deReportMeta.textContent = `${modeText} · ${owner} · 生成于 ${record.completedAt || '-'}`;
+            const confidence = record.confidence ? ` · 置信度 ${record.confidence}` : '';
+            this.deReportMeta.textContent = `${modeText} · ${owner} · 生成于 ${record.completedAt || '-'}${confidence}`;
         }
 
         this.renderReportTrace(record);

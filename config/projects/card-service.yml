@@ -1,0 +1,83 @@
+identity:
+  id: card-service
+  name: 出卡服务
+  owner: card-oncall
+  port: 18081
+  tags:
+    - protagonist
+    - demo
+
+datasources:
+  logs:
+    type: demo
+    locator: demo://card-service/application-logs
+    fieldMap:
+      time: time
+      level: level
+      service: service
+      message: message
+  metrics:
+    - name: 出卡接口 P99 耗时
+      promQL: issue_latency_p99
+      threshold: 800
+      thresholdDirection: upper
+      unit: ms
+      meaning: 用户提交出卡到返回的端到端耗时
+      scope: project
+    - name: 出卡成功率
+      promQL: issue_success_rate
+      threshold: 98
+      thresholdDirection: lower
+      unit: "%"
+      meaning: 出卡关键链路成功率
+      scope: project
+    - name: 库存预占失败次数
+      promQL: inventory_fail
+      threshold: 8
+      thresholdDirection: upper
+      unit: 次/5min
+      meaning: 卡号池预占失败
+      scope: project
+  code:
+    repoPath: demo/card-service
+    mainBranch: main
+    packagePrefix: com.demo.card
+  change:
+    type: demo
+    locator: demo://card-service/deploys
+
+knowledge:
+  namespace: card-service
+  docRoots:
+    - knowledge/card-service
+
+business:
+  criticalPaths:
+    - name: 出卡主链路
+      steps:
+        - 受理
+        - 风控
+        - 预占卡号
+        - 写卡
+        - 支付确认
+  knownFaults:
+    - pattern: 出卡超时
+      hint: 风控同步调用过长
+      runbookRef: card-timeout
+    - pattern: 成功率下跌
+      hint: 卡号池或下游支付
+      runbookRef: card-inventory
+  extraPromptHint: 主角项目，日志最完整。
+
+dependencies:
+  upstream: []
+  downstream:
+    - payment-service
+
+ops:
+  alertLabels:
+    service: card-service
+  severityMap:
+    CardApiSlowResponse: critical
+    CardSuccessRateDrop: critical
+  oncall: card-oncall

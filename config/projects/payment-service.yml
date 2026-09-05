@@ -1,0 +1,71 @@
+identity:
+  id: payment-service
+  name: 支付服务
+  owner: pay-oncall
+  port: 18082
+  tags:
+    - downstream
+    - demo
+
+datasources:
+  logs:
+    type: demo
+    locator: demo://payment-service/application-logs
+    fieldMap:
+      time: time
+      level: level
+      service: service
+      message: message
+  metrics:
+    - name: 支付渠道平均响应
+      promQL: channel_latency
+      threshold: 500
+      thresholdDirection: upper
+      unit: ms
+      meaning: 调用渠道平均耗时
+      scope: project
+    - name: 支付成功率
+      promQL: pay_success_rate
+      threshold: 98
+      thresholdDirection: lower
+      unit: "%"
+      meaning: 支付回调成功占比
+      scope: project
+  code:
+    repoPath: demo/payment-service
+    mainBranch: main
+    packagePrefix: com.demo.payment
+  change:
+    type: demo
+    locator: demo://payment-service/deploys
+
+knowledge:
+  namespace: payment-service
+  docRoots:
+    - knowledge/payment-service
+
+business:
+  criticalPaths:
+    - name: 支付回调
+      steps:
+        - 受理
+        - 渠道路由
+        - 渠道调用
+        - 回调通知
+  knownFaults:
+    - pattern: 渠道超时
+      hint: 渠道 SLA 或网络抖动
+      runbookRef: pay-timeout
+  extraPromptHint: 出卡服务的下游依赖。
+
+dependencies:
+  upstream:
+    - card-service
+  downstream: []
+
+ops:
+  alertLabels:
+    service: payment-service
+  severityMap:
+    PaymentChannelTimeout: critical
+  oncall: pay-oncall

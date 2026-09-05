@@ -98,3 +98,25 @@ cls:
     enabled: ${CLS_LOG_SHIPPING_ENABLED:true}
     interval-seconds: 60
     service-name: local-host  # 与 Prometheus 告警、日志中的 service 字段一致
+
+diagnosis:
+  projects-dir: config/projects
+  default-mode: PLATFORM
+  cross-project-expansion-enabled: true
+  cross-project-retrieval-enabled: false
+  demo-telemetry-enabled: true
+  context:
+    log-summary-threshold: 20
+    metric-points-threshold: 30
+    token-budget: 8000
+    trim-keep-recent-steps: 3
+    extra-prompt-hint-max-chars: 400
+    business-field-max-chars: 800
+  observability:
+    enabled: true
+    persist-prompt-body: false
+    retain-hours: 24
+  limits:
+    max-duration-seconds: 120
+    max-tool-calls: 20
+    max-concurrent: 2
