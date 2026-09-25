@@ -19,6 +19,7 @@
 | 项目级诊断编排（指标 / 日志 / 变更 / 代码线索 / 一跳扩展） | 已落地 |
 | 三层记忆 + 证据黑板 + `rawRef` 摘要 + Token 预算置信度 | 已落地 |
 | 全链路 Tracing（节点 / 工具 / LLM 事件，按 traceId 回放） | 已落地 |
+| Checkpoint 恢复（Chat / AI Ops / 项目诊断） | 已落地（单机原子文件存储） |
 | 8 个可撤销故障场景 + 评测跑批 | 已落地（进程内演示遥测） |
 | 采纳后候选知识确认发布 | API 已落地 |
 
@@ -53,6 +54,7 @@ git clone https://github.com/costar-opps/Diagnosis-Engine.git
 cd Diagnosis-Engine
 Copy-Item cls.env.example cls.env
 # 编辑 cls.env：至少填写 DASHSCOPE_API_KEY；要用日志证据再填腾讯云 CLS 相关项
+# 生产环境另需设置至少 32 字符的 CHECKPOINT_HMAC_SECRET
 ```
 
 1. `docker compose -f vector-database.yml up -d`
@@ -65,6 +67,30 @@ Copy-Item cls.env.example cls.env
 
 完整步骤见 [docs/启动手册.md](./docs/启动手册.md)。**密钥不要写进仓库。**
 
+## Checkpoint 与任务恢复
+
+系统为流式 Chat、Supervisor / Planner / Executor AI Ops 和项目级诊断维护版本化 Checkpoint。浏览器首次访问时由服务端签发 `session_id` 和 `session_token`，后续先校验可信会话，再按 `task_id` 定位任务，避免跨会话读取。
+
+- 默认存储：`./runtime/checkpoints/<session_id>/<task_id>.json`
+- 提交方式：先写 `.json.tmp`，完成后原子重命名；恢复只读取完整 `.json`
+- 恢复策略：跳过 `SUCCEEDED` 工具，按上限重试 `FAILED` 工具，将中断时的 `RUNNING` 标为 `UNKNOWN` 并重新核对只读外部系统
+- 兼容检查：恢复前校验 Checkpoint 状态版本、工作流版本；项目诊断还会校验项目档案指纹
+- 恢复上下文：仅装配系统规则、核心意图、当前状态、最近相关对话和关键工具结果
+- 审计信息：记录恢复来源、次数、跳过/重试/核对步骤及最终结果
+
+配置示例：
+
+```yaml
+checkpoint:
+  enabled: true
+  directory: ./runtime/checkpoints
+  hmac-secret: ${CHECKPOINT_HMAC_SECRET:local-development-checkpoint-secret-change-me}
+  max-failed-retries: 2
+  recent-conversation-pairs: 6
+```
+
+本实现面向单机演示，不序列化模型隐藏推理、Token 生成位置、Flux 或 Graph JVM 对象。多实例部署时应将文件存储替换为 Redis、关系数据库或对象存储，并务必覆盖默认开发密钥。
+
 ## 仓库结构
 
 ```text
@@ -74,6 +100,7 @@ Diagnosis-Engine/
 ├── openspec/changes/
 ├── scripts/
 └── src/main/java/org/example/
+    ├── checkpoint/                # 身份校验 / 原子快照 / 工具状态 / 恢复审计
     ├── diagnosis/                 # 档案 / 记忆 / 追踪 / 故障评测 / 编排
     ├── agent/                     # 工具与进度拦截器
     ├── controller/

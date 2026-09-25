@@ -29,6 +29,7 @@ apikey.txt
 app.log
 logs/
 uploads/
+/runtime/
 /volumes
 /server.pid
 startsse.txt

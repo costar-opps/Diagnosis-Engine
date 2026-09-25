@@ -64,6 +64,13 @@ rag:
 monitoring:
   collect-interval-ms: 15000
 
+checkpoint:
+  enabled: true
+  directory: ./runtime/checkpoints
+  hmac-secret: ${CHECKPOINT_HMAC_SECRET:local-development-checkpoint-secret-change-me}
+  max-failed-retries: 2
+  recent-conversation-pairs: 6
+
 management:
   endpoints:
     web:

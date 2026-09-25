@@ -71,6 +71,14 @@ rag:
 monitoring:
   collect-interval-ms: 15000
 
+# 本地单机 checkpoint；生产环境必须覆盖签名密钥
+checkpoint:
+  enabled: true
+  directory: ./runtime/checkpoints
+  hmac-secret: ${CHECKPOINT_HMAC_SECRET:local-development-checkpoint-secret-change-me}
+  max-failed-retries: 2
+  recent-conversation-pairs: 6
+
 # Actuator / Prometheus 指标暴露
 management:
   endpoints:

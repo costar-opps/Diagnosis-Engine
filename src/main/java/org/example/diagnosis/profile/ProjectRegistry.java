@@ -12,6 +12,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -91,6 +94,18 @@ public class ProjectRegistry {
             throw new IllegalArgumentException("项目不可诊断: " + projectId + "，原因: " + project.getReason());
         }
         return project;
+    }
+
+    public String fingerprint() {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            snapshot.get().entrySet().stream().sorted(Map.Entry.comparingByKey())
+                    .forEach(entry -> digest.update((entry.getKey() + "=" + entry.getValue())
+                            .getBytes(StandardCharsets.UTF_8)));
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (Exception e) {
+            throw new IllegalStateException("无法计算项目档案版本", e);
+        }
     }
 
     Map<String, RegisteredProject> loadFrom(Path dir) {

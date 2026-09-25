@@ -558,14 +558,30 @@ Object.assign(SuperBizAgentApp.prototype, {
         this.setDiagnosisStatus(`正在对「${this.escapeHtml(project.name)}」执行项目级诊断，请稍候...`);
 
         try {
-            const response = await fetch(`${this.apiBaseUrl}/diagnosis/diagnoses`, {
+            const checkpointHeaders = await this.checkpointHeaders();
+            const taskKey = `diagnosis_checkpoint_task_${project.id}`;
+            let resumeTaskId = localStorage.getItem(taskKey);
+            if (resumeTaskId) {
+                const saved = await fetch(
+                    `${this.apiBaseUrl}/checkpoint/tasks/${encodeURIComponent(resumeTaskId)}`,
+                    { headers: checkpointHeaders }
+                );
+                if (!saved.ok || (await saved.json()).status === 'COMPLETED') {
+                    resumeTaskId = null;
+                }
+            }
+            const query = resumeTaskId ? `?task_id=${encodeURIComponent(resumeTaskId)}` : '';
+            const response = await fetch(`${this.apiBaseUrl}/diagnosis/diagnoses${query}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...checkpointHeaders },
                 body: JSON.stringify({ project_id: project.id, mode: 'PROJECT' })
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) {
                 throw new Error(data.message || `诊断请求失败（HTTP ${response.status}）`);
+            }
+            if (data.task_id) {
+                localStorage.setItem(taskKey, data.task_id);
             }
 
             const record = {

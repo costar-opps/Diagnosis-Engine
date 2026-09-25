@@ -7,6 +7,8 @@ import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.agent.flow.agent.SupervisorAgent;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import org.example.agent.observability.ToolCallProgressInterceptor;
+import org.example.checkpoint.CheckpointRecord;
+import org.example.checkpoint.CheckpointService;
 import org.example.agent.tool.DateTimeTools;
 import org.example.agent.tool.InternalDocsTools;
 import org.example.agent.tool.QueryLogsTools;
@@ -70,11 +72,23 @@ public class AiOpsService {
      */
     public Optional<OverAllState> executeAiOpsAnalysis(DashScopeChatModel chatModel, ToolCallback[] toolCallbacks,
                                                        Consumer<String> progressListener) throws GraphRunnerException {
+        return executeAiOpsAnalysis(chatModel, toolCallbacks, progressListener, null, null, null);
+    }
+
+    public Optional<OverAllState> executeAiOpsAnalysis(DashScopeChatModel chatModel, ToolCallback[] toolCallbacks,
+                                                       Consumer<String> progressListener,
+                                                       CheckpointService checkpoints,
+                                                       CheckpointRecord checkpoint,
+                                                       CheckpointRecord.RecoveryAudit recoveryAudit)
+            throws GraphRunnerException {
         logger.info("开始执行 AI Ops 多 Agent 协作流程");
 
         // 工具调用是编排期间唯一可观测的外部动作，用它驱动进度上报
         ToolCallProgressInterceptor progressInterceptor =
-                progressListener == null ? null : new ToolCallProgressInterceptor(progressListener);
+                progressListener == null && checkpoint == null ? null
+                        : new ToolCallProgressInterceptor(
+                                progressListener == null ? ignored -> { } : progressListener,
+                                checkpoints, checkpoint, recoveryAudit);
 
         // 构建 Planner 和 Executor Agent
         ReactAgent plannerAgent = buildPlannerAgent(chatModel, toolCallbacks, progressInterceptor);
@@ -90,9 +104,24 @@ public class AiOpsService {
                 .build();
 
         String taskPrompt = "你是企业级 SRE，接到了自动化告警排查任务。请结合工具调用，执行**规划→执行→再规划**的闭环，并最终按照固定模板输出《告警分析报告》。禁止编造虚假数据，如连续多次查询失败需诚实反馈无法完成的原因。";
+        if (checkpoint != null && checkpoint.getRecoveryCount() > 0) {
+            taskPrompt += "\n这是一次任务恢复。已完成工具结果会由拦截器复用；当前状态："
+                    + checkpoint.getPhase() + "，最近进度：" + checkpoint.getPartialOutput()
+                    + "\n已确认工具结果：" + checkpoint.getPendingTools().stream()
+                    .filter(tool -> tool.getStatus() == org.example.checkpoint.PendingTool.Status.SUCCEEDED)
+                    .map(tool -> tool.getName() + "=" + abbreviate(tool.getResult(), 1200))
+                    .limit(8).toList();
+        }
 
         logger.info("调用 Supervisor Agent 开始编排...");
         return supervisorAgent.invoke(taskPrompt);
+    }
+
+    private static String abbreviate(String value, int maxChars) {
+        if (value == null || value.length() <= maxChars) {
+            return value;
+        }
+        return value.substring(0, maxChars) + "…";
     }
 
     /**

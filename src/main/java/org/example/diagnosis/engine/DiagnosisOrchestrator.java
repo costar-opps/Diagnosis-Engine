@@ -1,5 +1,10 @@
 package org.example.diagnosis.engine;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.example.checkpoint.CheckpointRecord;
+import org.example.checkpoint.CheckpointService;
+import org.example.checkpoint.PendingTool;
 import org.example.diagnosis.DiagnosisProperties;
 import org.example.diagnosis.access.QueryResult;
 import org.example.diagnosis.access.ScopedDataAccess;
@@ -53,14 +58,18 @@ public class DiagnosisOrchestrator {
     private final ConfidenceCalculator confidenceCalculator;
     private final ScopedKnowledgeStore knowledgeStore;
     private final DemoTelemetryStore telemetry;
+    private final CheckpointService checkpoints;
+    private final ObjectMapper objectMapper;
     private final Semaphore concurrency;
+    private final ThreadLocal<CheckpointRun> checkpointRun = new ThreadLocal<>();
 
     public DiagnosisOrchestrator(DiagnosisProperties properties, ProjectRegistry registry, ModeRouter modeRouter,
                                  PromptVariableAssembler prompts, ScopedDataAccess dataAccess,
                                  SessionMemoryStore sessionMemory, ContextAssembler contextAssembler,
                                  TraceStore traceStore, DiagnosisMetrics metrics, ReportStore reportStore,
                                  ConfidenceCalculator confidenceCalculator, ScopedKnowledgeStore knowledgeStore,
-                                 DemoTelemetryStore telemetry) {
+                                 DemoTelemetryStore telemetry, CheckpointService checkpoints,
+                                 ObjectMapper objectMapper) {
         this.properties = properties;
         this.registry = registry;
         this.modeRouter = modeRouter;
@@ -74,10 +83,18 @@ public class DiagnosisOrchestrator {
         this.confidenceCalculator = confidenceCalculator;
         this.knowledgeStore = knowledgeStore;
         this.telemetry = telemetry;
+        this.checkpoints = checkpoints;
+        this.objectMapper = objectMapper;
         this.concurrency = new Semaphore(properties.getLimits().getMaxConcurrent());
     }
 
     public DiagnosisReport diagnose(DiagnosisMode requestedMode, String projectId, String sessionId, String alertName) {
+        return diagnose(requestedMode, projectId, sessionId, alertName, null, null);
+    }
+
+    public DiagnosisReport diagnose(DiagnosisMode requestedMode, String projectId, String sessionId, String alertName,
+                                    CheckpointRecord checkpoint,
+                                    CheckpointRecord.RecoveryAudit recoveryAudit) {
         boolean acquired;
         try {
             acquired = concurrency.tryAcquire(2, TimeUnit.SECONDS);
@@ -93,8 +110,27 @@ public class DiagnosisOrchestrator {
         DiagnosisTrace trace = new DiagnosisTrace(traceId, requestedMode, projectId);
         EvidenceBlackboard board = new EvidenceBlackboard("diag-" + traceId);
         try {
-            DiagnosisContext context = assembleContext(requestedMode, projectId, sessionId, alertName, traceId);
+            checkpointRun.set(new CheckpointRun(checkpoint, recoveryAudit));
+            DiagnosisContext context = checkpoint != null && recoveryAudit != null
+                    ? restoreContext(checkpoint, traceId)
+                    : assembleContext(requestedMode, projectId, sessionId, alertName, traceId);
+            if (checkpoint != null && recoveryAudit == null) {
+                checkpoint.getTaskState().put("mode", context.getMode().name());
+                checkpoint.getTaskState().put("project_id", context.getProjectId());
+                checkpoint.getTaskState().put("session_id", context.getSessionId());
+                checkpoint.getTaskState().put("window_start", context.getWindowStart().toString());
+                checkpoint.getTaskState().put("window_end", context.getWindowEnd().toString());
+                checkpoint.getTaskState().put("routing_reason", context.getRoutingReason());
+                checkpoint.getTaskState().put("registry_fingerprint", registry.fingerprint());
+                checkpoints.update(checkpoint, current -> current.setPhase("COLLECTING"));
+            }
             trace = new DiagnosisTrace(traceId, context.getMode(), context.getProjectId());
+            if (recoveryAudit != null) {
+                trace.add(TraceEvent.builder().type("AUDIT").name("checkpoint-resume").phase("enter")
+                        .startedAt(System.currentTimeMillis()).durationMs(1).success(true)
+                        .summary("从 " + checkpoint.getTaskId() + " 第 " + checkpoint.getRecoveryCount() + " 次恢复")
+                        .build());
+            }
             board.setMode(context.getMode());
             board.setProjectId(context.getProjectId());
             DiagnosisContextHolder.set(context);
@@ -106,11 +142,35 @@ public class DiagnosisOrchestrator {
             DiagnosisReport report = buildReport(context, board, trace);
             reportStore.save(report);
             trace.finish(true);
+            if (checkpoint != null) {
+                String reportText = report.getMarkdown();
+                checkpoints.update(checkpoint, current -> {
+                    current.setStatus(CheckpointRecord.Status.COMPLETED);
+                    current.setPhase("COMPLETED");
+                    current.setPartialOutput(reportText);
+                    current.setFinalOutput(reportText);
+                    current.getTaskState().put("trace_id", report.getTraceId());
+                    current.getTaskState().put("report_id", report.getReportId());
+                });
+                if (recoveryAudit != null) {
+                    checkpoints.finishRecovery(checkpoint, recoveryAudit, "COMPLETED", "诊断恢复完成");
+                }
+            }
             return report;
         } catch (RuntimeException e) {
             trace.finish(false);
+            if (checkpoint != null) {
+                checkpoints.update(checkpoint, current -> {
+                    current.setStatus(CheckpointRecord.Status.FAILED);
+                    current.setPhase("FAILED");
+                });
+                if (recoveryAudit != null) {
+                    checkpoints.finishRecovery(checkpoint, recoveryAudit, "FAILED", e.getMessage());
+                }
+            }
             throw e;
         } finally {
+            checkpointRun.remove();
             DiagnosisContextHolder.clear();
             traceStore.save(trace);
             long duration = System.currentTimeMillis() - started;
@@ -143,6 +203,31 @@ public class DiagnosisOrchestrator {
                 .windowEnd(end)
                 .routingReason(route.reason())
                 .build();
+    }
+
+    private DiagnosisContext restoreContext(CheckpointRecord checkpoint, String traceId) {
+        Object expectedFingerprint = checkpoint.getTaskState().get("registry_fingerprint");
+        if (expectedFingerprint == null || !registry.fingerprint().equals(expectedFingerprint.toString())) {
+            throw new CheckpointService.CheckpointVersionException("项目档案版本已变化，拒绝恢复旧诊断");
+        }
+        DiagnosisMode mode = DiagnosisMode.from(String.valueOf(checkpoint.getTaskState().get("mode")));
+        String projectId = nullableString(checkpoint.getTaskState().get("project_id"));
+        String sessionId = nullableString(checkpoint.getTaskState().get("session_id"));
+        RegisteredProject project = mode == DiagnosisMode.PROJECT ? registry.requireDiagnosable(projectId) : null;
+        return DiagnosisContext.builder()
+                .traceId(traceId)
+                .sessionId(sessionId)
+                .mode(mode)
+                .projectId(projectId)
+                .project(project)
+                .windowStart(Instant.parse(String.valueOf(checkpoint.getTaskState().get("window_start"))))
+                .windowEnd(Instant.parse(String.valueOf(checkpoint.getTaskState().get("window_end"))))
+                .routingReason(String.valueOf(checkpoint.getTaskState().get("routing_reason")))
+                .build();
+    }
+
+    private static String nullableString(Object value) {
+        return value == null || "null".equals(value.toString()) ? null : value.toString();
     }
 
     private void collect(DiagnosisContext context, EvidenceBlackboard board, DiagnosisTrace trace) {
@@ -180,20 +265,21 @@ public class DiagnosisOrchestrator {
             return;
         }
         for (ProjectProfile.MetricDef metric : registered.getProfile().getDatasources().getMetrics()) {
-            QueryResult result = call(trace, board, calls, budget, "queryProjectMetric:" + metric.getName(),
+            QueryResult result = call(trace, board, calls, budget,
+                    "queryProjectMetric:" + projectId + ":" + metric.getName(),
                     () -> dataAccess.queryProjectMetric(projectId, metric.getName()));
             if (result.isSuccess()) {
                 board.addEvidence(item("metric", metric.getName(), result.getSummary(), projectId,
                         expansion ? "range" : "root_cause", result.getRawRef()));
             }
         }
-        QueryResult logs = call(trace, board, calls, budget, "queryProjectLogs",
+        QueryResult logs = call(trace, board, calls, budget, "queryProjectLogs:" + projectId,
                 () -> dataAccess.queryProjectLogs(projectId));
         if (logs.isSuccess()) {
             board.addEvidence(item("log", projectId + " 日志", logs.getSummary(), projectId,
                     context.getMode() == DiagnosisMode.PLATFORM ? "range" : "root_cause", logs.getRawRef()));
         }
-        QueryResult change = call(trace, board, calls, budget, "queryChanges",
+        QueryResult change = call(trace, board, calls, budget, "queryChanges:" + projectId,
                 () -> dataAccess.queryChanges(projectId));
         if (change.isSuccess() && !Boolean.TRUE.equals(change.getExtra().get("empty"))) {
             board.addEvidence(item("change", "最近变更", change.getSummary(), projectId, "root_cause",
@@ -201,7 +287,7 @@ public class DiagnosisOrchestrator {
                             .locator(String.valueOf(change.getExtra().getOrDefault("change_id", "")))
                             .totalCount(1).build()));
         }
-        QueryResult code = call(trace, board, calls, budget, "locateCode",
+        QueryResult code = call(trace, board, calls, budget, "locateCode:" + projectId,
                 () -> dataAccess.locateCode(projectId));
         if (code.isSuccess() && code.getItems() != null && !code.getItems().isEmpty()) {
             board.addEvidence(item("code", "代码线索", code.getSummary(), projectId, "root_cause",
@@ -344,6 +430,39 @@ public class DiagnosisOrchestrator {
 
     private QueryResult call(DiagnosisTrace trace, EvidenceBlackboard board, AtomicInteger calls, int budget,
                              String name, java.util.function.Supplier<QueryResult> supplier) {
+        CheckpointRun run = checkpointRun.get();
+        PendingTool tracked = null;
+        if (run != null && run.checkpoint() != null) {
+            PendingTool previous = checkpoints.findTool(run.checkpoint(), name, "").orElse(null);
+            if (previous != null && previous.getStatus() == PendingTool.Status.SUCCEEDED) {
+                try {
+                    QueryResult cached = objectMapper.readValue(previous.getResult(), QueryResult.class);
+                    if (run.audit() != null) {
+                        run.audit().getSkippedTools().add(name);
+                        checkpoints.update(run.checkpoint(), ignored -> { });
+                    }
+                    trace.add(TraceEvent.builder().type("TOOL").name(name).phase("checkpoint-hit")
+                            .startedAt(System.currentTimeMillis()).durationMs(0).success(cached.isSuccess())
+                            .summary(cached.getSummary()).build());
+                    return cached;
+                } catch (JsonProcessingException e) {
+                    throw new IllegalStateException("checkpoint 工具结果无法解析: " + name, e);
+                }
+            }
+            if (previous != null && previous.getStatus() == PendingTool.Status.FAILED
+                    && !checkpoints.mayRetry(previous)) {
+                board.getFailedTools().add(name + ":达到恢复重试上限");
+                return QueryResult.fail(name, "checkpoint", "达到恢复重试上限");
+            }
+            if (previous != null && run.audit() != null) {
+                if (previous.getStatus() == PendingTool.Status.UNKNOWN) {
+                    run.audit().getVerifiedTools().add(name);
+                } else if (previous.getStatus() == PendingTool.Status.FAILED) {
+                    run.audit().getRetriedTools().add(name);
+                }
+            }
+            tracked = checkpoints.beforeTool(run.checkpoint(), name, "");
+        }
         if (calls.incrementAndGet() > budget) {
             board.setBudgetExhausted(true);
             board.getTrimRecords().add("达到工具调用上限，提前终止");
@@ -356,6 +475,13 @@ public class DiagnosisOrchestrator {
             if (!ok) {
                 board.getFailedTools().add(name + ":" + result.getMessage());
             }
+            if (tracked != null) {
+                if (ok) {
+                    checkpoints.toolSucceeded(run.checkpoint(), tracked, writeResult(result));
+                } else {
+                    checkpoints.toolFailed(run.checkpoint(), tracked, result.getMessage());
+                }
+            }
             trace.add(TraceEvent.builder()
                     .type("TOOL").name(name).phase("call").startedAt(t0)
                     .durationMs(System.currentTimeMillis() - t0).success(ok)
@@ -363,6 +489,9 @@ public class DiagnosisOrchestrator {
                     .build());
             return result;
         } catch (RuntimeException e) {
+            if (tracked != null) {
+                checkpoints.toolFailed(run.checkpoint(), tracked, e.getMessage());
+            }
             board.getFailedTools().add(name + ":" + e.getMessage());
             trace.add(TraceEvent.builder()
                     .type("TOOL").name(name).phase("call").startedAt(t0)
@@ -370,6 +499,14 @@ public class DiagnosisOrchestrator {
                     .summary(e.getMessage()).rejectReason(e.getMessage())
                     .build());
             return QueryResult.fail(name, "tool", e.getMessage());
+        }
+    }
+
+    private String writeResult(QueryResult result) {
+        try {
+            return objectMapper.writeValueAsString(result);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("无法提交工具 checkpoint", e);
         }
     }
 
@@ -418,5 +555,8 @@ public class DiagnosisOrchestrator {
             return List.of(owner.toString());
         }
         return telemetry.allProjects().keySet().stream().toList();
+    }
+
+    private record CheckpointRun(CheckpointRecord checkpoint, CheckpointRecord.RecoveryAudit audit) {
     }
 }

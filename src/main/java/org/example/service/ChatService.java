@@ -4,6 +4,7 @@ import com.alibaba.cloud.ai.dashscope.api.DashScopeApi;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
+import com.alibaba.cloud.ai.graph.agent.interceptor.ToolInterceptor;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import org.example.agent.tool.DateTimeTools;
 import org.example.agent.tool.InternalDocsTools;
@@ -174,13 +175,21 @@ public class ChatService {
      * @return 配置好的 ReactAgent
      */
     public ReactAgent createReactAgent(DashScopeChatModel chatModel, String systemPrompt) {
-        return ReactAgent.builder()
+        return createReactAgent(chatModel, systemPrompt, null);
+    }
+
+    public ReactAgent createReactAgent(DashScopeChatModel chatModel, String systemPrompt,
+                                       ToolInterceptor interceptor) {
+        var builder = ReactAgent.builder()
                 .name("intelligent_assistant")
                 .model(chatModel)
                 .systemPrompt(systemPrompt)
                 .methodTools(buildMethodToolsArray())
-                .tools(getToolCallbacks())
-                .build();
+                .tools(getToolCallbacks());
+        if (interceptor != null) {
+            builder.interceptors(interceptor);
+        }
+        return builder.build();
     }
 
     /**

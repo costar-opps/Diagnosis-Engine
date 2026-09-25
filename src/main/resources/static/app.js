@@ -4,6 +4,9 @@ class SuperBizAgentApp {
         this.apiBaseUrl = 'http://localhost:9900/api';
         this.currentMode = 'quick'; // 'quick' 或 'stream'
         this.sessionId = this.generateSessionId();
+        this.checkpointSessionId = localStorage.getItem('checkpoint_session_id');
+        this.checkpointSessionToken = localStorage.getItem('checkpoint_session_token');
+        this.currentTaskId = localStorage.getItem('checkpoint_current_task_id');
         this.isStreaming = false;
         this.currentChatHistory = []; // 当前对话的消息历史
         this.chatHistories = this.loadChatHistories(); // 所有历史对话
@@ -27,6 +30,54 @@ class SuperBizAgentApp {
         this.checkAndSetCentered();
         this.renderChatHistory();
         this.initAiOpsMonitorPage();
+        this.initializeCheckpointSession()
+            .then(() => this.restoreLastCheckpoint())
+            .catch(error => console.warn('checkpoint 初始化失败:', error));
+    }
+
+    async initializeCheckpointSession() {
+        if (this.checkpointSessionId && this.checkpointSessionToken) return;
+        const response = await fetch(`${this.apiBaseUrl}/checkpoint/sessions`, { method: 'POST' });
+        if (!response.ok) throw new Error('无法创建 checkpoint 会话');
+        const credential = await response.json();
+        this.checkpointSessionId = credential.session_id;
+        this.checkpointSessionToken = credential.session_token;
+        localStorage.setItem('checkpoint_session_id', this.checkpointSessionId);
+        localStorage.setItem('checkpoint_session_token', this.checkpointSessionToken);
+    }
+
+    async checkpointHeaders() {
+        await this.initializeCheckpointSession();
+        return {
+            'X-Session-Id': this.checkpointSessionId,
+            'X-Session-Token': this.checkpointSessionToken
+        };
+    }
+
+    rememberTask(taskId) {
+        if (!taskId) return;
+        this.currentTaskId = taskId;
+        localStorage.setItem('checkpoint_current_task_id', taskId);
+    }
+
+    async restoreLastCheckpoint() {
+        if (!this.currentTaskId || this.isStreaming) return;
+        const headers = await this.checkpointHeaders();
+        const response = await fetch(
+            `${this.apiBaseUrl}/checkpoint/tasks/${encodeURIComponent(this.currentTaskId)}`,
+            { headers }
+        );
+        if (!response.ok) return;
+        const task = await response.json();
+        if (task.status === 'COMPLETED') return;
+        this.showNotification(`正在恢复未完成任务 ${task.taskId}`, 'warning');
+        if (task.taskType === 'CHAT') {
+            this.addMessage('user', task.coreIntent, false, false);
+            await this.sendStreamMessage(task.coreIntent, task.taskId);
+        } else if (task.taskType === 'AIOPS') {
+            const loading = this.addMessage('assistant', '正在恢复平台级诊断...', true);
+            await this.sendAIOpsRequest(loading, task.taskId);
+        }
     }
 
     // 初始化Markdown配置
@@ -734,12 +785,15 @@ class SuperBizAgentApp {
     }
 
     // 发送流式消息
-    async sendStreamMessage(message) {
+    async sendStreamMessage(message, resumeTaskId = null) {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/chat_stream`, {
+            const checkpointHeaders = await this.checkpointHeaders();
+            const query = resumeTaskId ? `?task_id=${encodeURIComponent(resumeTaskId)}` : '';
+            const response = await fetch(`${this.apiBaseUrl}/chat_stream${query}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
+                    ...checkpointHeaders,
                 },
                 body: JSON.stringify({
                     Id: this.sessionId,
@@ -813,7 +867,9 @@ class SuperBizAgentApp {
                                 console.log('[SSE调试] 解析JSON成功:', sseMessage);
                                 
                                 if (sseMessage && typeof sseMessage.type === 'string') {
-                                    if (sseMessage.type === 'content') {
+                                    if (sseMessage.type === 'meta') {
+                                        this.rememberTask(sseMessage.data);
+                                    } else if (sseMessage.type === 'content') {
                                         const content = sseMessage.data || '';
                                         fullResponse += content;
                                         console.log('[SSE调试] 添加内容:', content);
@@ -1175,12 +1231,15 @@ class SuperBizAgentApp {
     }
 
     // 发送智能运维请求（SSE 流式模式）
-    async sendAIOpsRequest(loadingMessageElement) {
+    async sendAIOpsRequest(loadingMessageElement, resumeTaskId = null) {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/ai_ops`, {
+            const checkpointHeaders = await this.checkpointHeaders();
+            const query = resumeTaskId ? `?task_id=${encodeURIComponent(resumeTaskId)}` : '';
+            const response = await fetch(`${this.apiBaseUrl}/ai_ops${query}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
+                    ...checkpointHeaders,
                 }
             });
 
@@ -1283,7 +1342,9 @@ class SuperBizAgentApp {
                                     for (const jsonStr of matches) {
                                         try {
                                             const sseMessage = JSON.parse(jsonStr);
-                                            if (sseMessage.type === 'content') {
+                                            if (sseMessage.type === 'meta') {
+                                                this.rememberTask(sseMessage.data);
+                                            } else if (sseMessage.type === 'content') {
                                                 fullResponse += sseMessage.data || '';
                                             } else if (sseMessage.type === 'progress') {
                                                 applyProgress(sseMessage.data || '');
@@ -1314,7 +1375,9 @@ class SuperBizAgentApp {
                                 try {
                                     const sseMessage = JSON.parse(rawData);
                                     if (sseMessage && sseMessage.type) {
-                                        if (sseMessage.type === 'content') {
+                                        if (sseMessage.type === 'meta') {
+                                            this.rememberTask(sseMessage.data);
+                                        } else if (sseMessage.type === 'content') {
                                             fullResponse += sseMessage.data || '';
                                             renderLive();
                                         } else if (sseMessage.type === 'progress') {

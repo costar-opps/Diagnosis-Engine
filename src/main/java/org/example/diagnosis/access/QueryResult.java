@@ -2,6 +2,8 @@ package org.example.diagnosis.access;
 
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
 import org.example.diagnosis.memory.RawRef;
 
 import java.util.ArrayList;
@@ -11,6 +13,8 @@ import java.util.Map;
 
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class QueryResult {
     private boolean success;
     private String tool;

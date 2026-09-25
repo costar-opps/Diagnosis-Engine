@@ -10,6 +10,10 @@ import com.alibaba.cloud.ai.graph.streaming.OutputType;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import lombok.Getter;
 import lombok.Setter;
+import org.example.agent.observability.ToolCallProgressInterceptor;
+import org.example.checkpoint.CheckpointController;
+import org.example.checkpoint.CheckpointRecord;
+import org.example.checkpoint.CheckpointService;
 import org.example.service.AiOpsService;
 import org.example.service.ChatService;
 import org.slf4j.Logger;
@@ -53,6 +57,9 @@ public class ChatController {
 
     @Autowired
     private ToolCallbackProvider tools;
+
+    @Autowired
+    private CheckpointService checkpoints;
 
     private final ExecutorService executor = Executors.newCachedThreadPool();
 
@@ -151,7 +158,11 @@ public class ChatController {
      * 支持 session 管理，保留对话历史
      */
     @PostMapping(value = "/chat_stream", produces = "text/event-stream;charset=UTF-8")
-    public SseEmitter chatStream(@RequestBody ChatRequest request) {
+    public SseEmitter chatStream(
+            @RequestBody ChatRequest request,
+            @RequestHeader(value = CheckpointController.SESSION_HEADER, required = false) String sessionId,
+            @RequestHeader(value = CheckpointController.TOKEN_HEADER, required = false) String sessionToken,
+            @RequestParam(value = "task_id", required = false) String resumeTaskId) {
         SseEmitter emitter = new SseEmitter(300000L); // 5分钟超时
 
         // 参数校验
@@ -166,12 +177,48 @@ public class ChatController {
             return emitter;
         }
 
+        final CheckpointRecord checkpoint;
+        final CheckpointRecord.RecoveryAudit recoveryAudit;
+        try {
+            if (resumeTaskId == null || resumeTaskId.isBlank()) {
+                SessionInfo existing = getOrCreateSession(request.getId());
+                if (existing.getHistory().isEmpty()) {
+                    checkpoints.latest(sessionId, sessionToken, 50).stream()
+                            .filter(item -> "CHAT".equals(item.getTaskType()))
+                            .filter(item -> request.getId().equals(item.getTaskState().get("thread_id")))
+                            .filter(item -> item.getStatus() == CheckpointRecord.Status.COMPLETED)
+                            .findFirst()
+                            .ifPresent(item -> existing.restoreHistory(item.getRecentConversation()));
+                }
+                checkpoint = checkpoints.create(sessionId, sessionToken, "CHAT",
+                        CheckpointRecord.CHAT_WORKFLOW, request.getQuestion(), existing.getHistory());
+                checkpoint.getTaskState().put("thread_id", request.getId());
+                checkpoints.update(checkpoint, ignored -> { });
+                recoveryAudit = null;
+            } else {
+                checkpoint = checkpoints.require(sessionId, sessionToken, resumeTaskId,
+                        CheckpointRecord.CHAT_WORKFLOW);
+                recoveryAudit = checkpoints.beginRecovery(checkpoint);
+                request.setQuestion(checkpoint.getCoreIntent());
+                request.setId(String.valueOf(checkpoint.getTaskState().get("thread_id")));
+            }
+            emitter.send(SseEmitter.event().name("message")
+                    .data(SseMessage.meta(checkpoint.getTaskId()), MediaType.APPLICATION_JSON));
+        } catch (Exception e) {
+            sendSseQuietly(emitter, new ReentrantLock(), SseMessage.error(e.getMessage()));
+            emitter.complete();
+            return emitter;
+        }
+
         executor.execute(() -> {
             try {
                 logger.info("收到 ReactAgent 对话请求 - SessionId: {}, Question: {}", request.getId(), request.getQuestion());
 
                 // 获取或创建会话
                 SessionInfo session = getOrCreateSession(request.getId());
+                if (session.getHistory().isEmpty() && !checkpoint.getRecentConversation().isEmpty()) {
+                    session.restoreHistory(checkpoint.getRecentConversation());
+                }
                 
                 // 获取历史消息
                 List<Map<String, String>> history = session.getHistory();
@@ -188,9 +235,20 @@ public class ChatController {
                 
                 // 构建系统提示词（包含历史消息）
                 String systemPrompt = chatService.buildSystemPrompt(history);
+                if (recoveryAudit != null) {
+                    systemPrompt += "\n--- 恢复上下文 ---\n任务状态：" + checkpoint.getPhase()
+                            + "\n已提交的部分输出：" + checkpoint.getPartialOutput()
+                            + "\n已确认工具结果：" + checkpoint.getPendingTools().stream()
+                            .filter(tool -> tool.getStatus()
+                                    == org.example.checkpoint.PendingTool.Status.SUCCEEDED)
+                            .map(tool -> tool.getName() + "=" + abbreviate(tool.getResult(), 800))
+                            .limit(6).toList();
+                }
                 
                 // 创建 ReactAgent
-                ReactAgent agent = chatService.createReactAgent(chatModel, systemPrompt);
+                ToolCallProgressInterceptor checkpointInterceptor =
+                        new ToolCallProgressInterceptor(ignored -> { }, checkpoints, checkpoint, recoveryAudit);
+                ReactAgent agent = chatService.createReactAgent(chatModel, systemPrompt, checkpointInterceptor);
                 
                 // 用于累积完整答案
                 StringBuilder fullAnswerBuilder = new StringBuilder();
@@ -211,6 +269,12 @@ public class ChatController {
                                     String chunk = streamingOutput.message().getText();
                                     if (chunk != null && !chunk.isEmpty()) {
                                         fullAnswerBuilder.append(chunk);
+                                        if (fullAnswerBuilder.length() - checkpoint.getPartialOutput().length() >= 256) {
+                                            checkpoints.update(checkpoint, current -> {
+                                                current.setPhase("GENERATING");
+                                                current.setPartialOutput(fullAnswerBuilder.toString());
+                                            });
+                                        }
                                         
                                         // 实时发送到前端
                                         emitter.send(SseEmitter.event()
@@ -238,6 +302,14 @@ public class ChatController {
                     error -> {
                         // 错误处理
                         logger.error("ReactAgent 流式对话失败", error);
+                        checkpoints.update(checkpoint, current -> {
+                            current.setStatus(CheckpointRecord.Status.FAILED);
+                            current.setPhase("FAILED");
+                            current.setPartialOutput(fullAnswerBuilder.toString());
+                        });
+                        if (recoveryAudit != null) {
+                            checkpoints.finishRecovery(checkpoint, recoveryAudit, "FAILED", rootMessage(error));
+                        }
                         try {
                             emitter.send(SseEmitter.event()
                                     .name("message")
@@ -256,6 +328,16 @@ public class ChatController {
                             
                             // 更新会话历史
                             session.addMessage(request.getQuestion(), fullAnswer);
+                            checkpoints.update(checkpoint, current -> {
+                                current.setStatus(CheckpointRecord.Status.COMPLETED);
+                                current.setPhase("COMPLETED");
+                                current.setPartialOutput(fullAnswer);
+                                current.setFinalOutput(fullAnswer);
+                                current.setRecentConversation(session.getHistory());
+                            });
+                            if (recoveryAudit != null) {
+                                checkpoints.finishRecovery(checkpoint, recoveryAudit, "COMPLETED", "对话恢复完成");
+                            }
                             logger.info("已更新会话历史 - SessionId: {}, 当前消息对数: {}", 
                                 request.getId(), session.getMessagePairCount());
                             
@@ -273,6 +355,13 @@ public class ChatController {
 
             } catch (Exception e) {
                 logger.error("ReactAgent 对话初始化失败", e);
+                checkpoints.update(checkpoint, current -> {
+                    current.setStatus(CheckpointRecord.Status.FAILED);
+                    current.setPhase("FAILED");
+                });
+                if (recoveryAudit != null) {
+                    checkpoints.finishRecovery(checkpoint, recoveryAudit, "FAILED", rootMessage(e));
+                }
                 try {
                     emitter.send(SseEmitter.event()
                             .name("message")
@@ -292,13 +381,34 @@ public class ChatController {
      * 无需用户输入，自动执行告警分析流程
      */
     @PostMapping(value = "/ai_ops", produces = "text/event-stream;charset=UTF-8")
-    public SseEmitter aiOps() {
+    public SseEmitter aiOps(
+            @RequestHeader(value = CheckpointController.SESSION_HEADER, required = false) String sessionId,
+            @RequestHeader(value = CheckpointController.TOKEN_HEADER, required = false) String sessionToken,
+            @RequestParam(value = "task_id", required = false) String resumeTaskId) {
         SseEmitter emitter = new SseEmitter(600000L); // 10分钟超时（告警分析可能较慢）
 
         // SSE 写入会同时来自编排线程与心跳线程，必须串行化
         ReentrantLock sendLock = new ReentrantLock();
         AtomicBoolean finished = new AtomicBoolean(false);
         long startedAt = System.currentTimeMillis();
+        final CheckpointRecord checkpoint;
+        final CheckpointRecord.RecoveryAudit recoveryAudit;
+        try {
+            if (resumeTaskId == null || resumeTaskId.isBlank()) {
+                checkpoint = checkpoints.create(sessionId, sessionToken, "AIOPS",
+                        CheckpointRecord.AIOPS_WORKFLOW, "自动分析当前活跃告警", List.of());
+                recoveryAudit = null;
+            } else {
+                checkpoint = checkpoints.require(sessionId, sessionToken, resumeTaskId,
+                        CheckpointRecord.AIOPS_WORKFLOW);
+                recoveryAudit = checkpoints.beginRecovery(checkpoint);
+            }
+            sendSse(emitter, sendLock, SseMessage.meta(checkpoint.getTaskId()));
+        } catch (Exception e) {
+            sendSseQuietly(emitter, sendLock, SseMessage.error(e.getMessage()));
+            emitter.complete();
+            return emitter;
+        }
 
         executor.execute(() -> {
             ScheduledFuture<?> heartbeat = null;
@@ -319,6 +429,7 @@ public class ChatController {
                 ToolCallback[] toolCallbacks = chatService.getToolCallbacks();
 
                 sendSse(emitter, sendLock, SseMessage.progress("正在读取告警并拆解任务..."));
+                checkpoints.update(checkpoint, current -> current.setPhase("PLANNING"));
 
                 heartbeat = heartbeatScheduler.scheduleAtFixedRate(
                         () -> {
@@ -336,15 +447,23 @@ public class ChatController {
                         chatModel, toolCallbacks,
                         step -> {
                             if (step != null && !step.equals(lastProgress.getAndSet(step))) {
+                                checkpoints.update(checkpoint, current -> {
+                                    current.setPhase("EXECUTING");
+                                    current.setPartialOutput(step);
+                                });
                                 sendSseQuietly(emitter, sendLock,
                                         SseMessage.progress("已用时 " + elapsedText(startedAt) + " · " + step));
                             }
-                        });
+                        }, checkpoints, checkpoint, recoveryAudit);
 
                 finished.set(true);
                 heartbeat.cancel(false);
 
                 if (overAllStateOptional.isEmpty()) {
+                    checkpoints.update(checkpoint, current -> {
+                        current.setStatus(CheckpointRecord.Status.FAILED);
+                        current.setPhase("FAILED");
+                    });
                     sendSse(emitter, sendLock, SseMessage.error("多 Agent 编排未获取到有效结果"));
                     emitter.complete();
                     return;
@@ -359,6 +478,12 @@ public class ChatController {
                 // 输出最终报告
                 if (finalReportOptional.isPresent()) {
                     String finalReportText = finalReportOptional.get();
+                    checkpoints.update(checkpoint, current -> {
+                        current.setStatus(CheckpointRecord.Status.COMPLETED);
+                        current.setPhase("COMPLETED");
+                        current.setPartialOutput(finalReportText);
+                        current.setFinalOutput(finalReportText);
+                    });
                     logger.info("提取到 Planner 最终报告，长度: {}", finalReportText.length());
                     
                     // 发送分隔线
@@ -384,11 +509,21 @@ public class ChatController {
                 }
 
                 sendSse(emitter, sendLock, SseMessage.done());
+                if (recoveryAudit != null) {
+                    checkpoints.finishRecovery(checkpoint, recoveryAudit, "COMPLETED", "AI Ops 恢复完成");
+                }
                 emitter.complete();
                 logger.info("AI Ops 多 Agent 编排完成，总耗时 {}", elapsedText(startedAt));
 
             } catch (Exception e) {
                 logger.error("AI Ops 多 Agent 协作失败", e);
+                checkpoints.update(checkpoint, current -> {
+                    current.setStatus(CheckpointRecord.Status.FAILED);
+                    current.setPhase("FAILED");
+                });
+                if (recoveryAudit != null) {
+                    checkpoints.finishRecovery(checkpoint, recoveryAudit, "FAILED", rootMessage(e));
+                }
                 // 必须把失败显式告诉前端：此时响应头已是 text/event-stream，
                 // 若交给容器兜底会因为无法序列化错误页而静默断流，前端将永远停在 loading
                 sendSseQuietly(emitter, sendLock, SseMessage.error("平台级诊断失败: " + rootMessage(e)));
@@ -453,6 +588,13 @@ public class ChatController {
             return "DashScope API Key 无效，请检查 application.yml 中的配置";
         }
         return message;
+    }
+
+    private static String abbreviate(String value, int maxChars) {
+        if (value == null || value.length() <= maxChars) {
+            return value;
+        }
+        return value.substring(0, maxChars) + "…";
     }
 
     /**
@@ -542,6 +684,21 @@ public class ChatController {
                 logger.debug("会话 {} 更新历史消息，当前消息对数: {}", 
                     sessionId, messageHistory.size() / 2);
 
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        public void restoreHistory(List<Map<String, String>> history) {
+            lock.lock();
+            try {
+                messageHistory.clear();
+                if (history != null) {
+                    int from = Math.max(0, history.size() - MAX_WINDOW_SIZE * 2);
+                    for (Map<String, String> message : history.subList(from, history.size())) {
+                        messageHistory.add(new HashMap<>(message));
+                    }
+                }
             } finally {
                 lock.unlock();
             }
@@ -659,8 +816,15 @@ public class ChatController {
     @Setter
     @Getter
     public static class SseMessage {
-        private String type;  // content: 内容块, progress: 进度, error: 错误, done: 完成
+        private String type;  // meta/content/progress/error/done
         private String data;
+
+        public static SseMessage meta(String taskId) {
+            SseMessage message = new SseMessage();
+            message.setType("meta");
+            message.setData(taskId);
+            return message;
+        }
 
         /**
          * 进度消息只用于替换前端的状态行，不参与正文拼接
